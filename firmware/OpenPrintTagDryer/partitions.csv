@@ -1,0 +1,19 @@
+# Partition table for the 4 MB XIAO ESP32-C6.
+#
+# The board package's stock tables force a choice between over-the-air updates
+# and headroom: the only OTA-capable scheme for this board gives 1.2 MB per app
+# slot, and Wi-Fi plus a web server plus MQTT already fills 93% of that. A
+# filesystem is what this firmware does not need -- the web pages are compiled
+# in and the settings live in NVS -- so the space goes to the two app slots
+# instead, which brings the same binary down to about two thirds of a slot.
+#
+# The ESP32 board package uses this file automatically because it sits in the
+# sketch folder, whatever partition scheme the IDE menu shows.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x1D0000,
+app1,     app,  ota_1,   0x1E0000, 0x1D0000,
+spiffs,   data, spiffs,  0x3B0000, 0x40000,
+coredump, data, coredump,0x3F0000, 0x10000,

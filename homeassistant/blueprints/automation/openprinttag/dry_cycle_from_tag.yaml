@@ -1,0 +1,190 @@
+blueprint:
+  name: Dry a spool the way its tag asks
+  description: >-
+    Runs a drying cycle using the temperature and time stored on the spool's
+    OpenPrintTag, so the numbers come off the filament rather than out of your
+    memory.
+
+
+    Everything except the three sensors is optional. With no switch and no
+    climate entity configured this becomes a well-informed reminder, which is
+    all Home Assistant can do for a dryer with a manual dial. Add a smart plug
+    and it runs the cycle and switches off at the end.
+
+
+    Copy to `config/blueprints/automation/openprinttag/` and reload
+    automations, or import it from the Blueprints page.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    tag_present:
+      name: Tag present
+      description: The device's binary sensor that goes on when a spool is being read.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    drying_temperature:
+      name: Recommended drying temperature
+      description: The sensor carrying the tag's drying temperature.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    drying_time:
+      name: Recommended drying time
+      description: The sensor carrying the tag's drying time, in minutes.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    spool_name:
+      name: Spool name (optional)
+      description: >-
+        A sensor whose state names the spool, used in the notifications. The
+        package's `sensor.filament_dryer_spool` is meant for this.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+    dryer_switch:
+      name: Dryer power (optional)
+      description: >-
+        Switched on at the start of the cycle and off at the end. Leave empty if
+        the dryer has no smart plug.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: switch
+            - domain: input_boolean
+    dryer_climate:
+      name: Dryer thermostat (optional)
+      description: >-
+        Set to the tag's drying temperature at the start of the cycle. Only for
+        dryers that Home Assistant can actually control.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: climate
+    settle_minutes:
+      name: Wait before starting
+      description: >-
+        How long the tag has to stay present before the cycle begins, so that
+        loading a spool and immediately taking it back out does nothing.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 30
+          unit_of_measurement: min
+          mode: slider
+    max_hours:
+      name: Longest cycle allowed
+      description: >-
+        A cap on whatever the tag asks for. A mistyped drying time on a tag
+        should not be able to run a heater for two days.
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 24
+          unit_of_measurement: h
+          mode: slider
+    notify_action:
+      name: How to tell you
+      description: >-
+        Run at the start and end of the cycle. The variable `message` holds the
+        text, so a mobile notification is `notify.mobile_app_x` with
+        `message: "{{ message }}"`.
+      default:
+        - action: persistent_notification.create
+          data:
+            notification_id: openprinttag_dry_cycle
+            title: Filament dryer
+            message: "{{ message }}"
+      selector:
+        action: {}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input tag_present
+    to: "on"
+    for:
+      minutes: !input settle_minutes
+
+conditions:
+  # A tag that carries no drying advice is not a reason to guess at some.
+  - condition: template
+    value_template: >-
+      {{ states(drying_time_entity) | int(0) > 0
+         and states(drying_temperature_entity) not in ['unknown', 'unavailable', 'none'] }}
+
+variables:
+  drying_temperature_entity: !input drying_temperature
+  drying_time_entity: !input drying_time
+  spool_name_entities: !input spool_name
+  dryer_switch_ids: !input dryer_switch
+  max_hours: !input max_hours
+  drying_c: "{{ states(drying_temperature_entity) }}"
+  # Capped, and never shorter than a quarter of an hour: a one-minute cycle is
+  # a data error, not an instruction.
+  drying_min: >-
+    {{ [[states(drying_time_entity) | int(0), max_hours * 60] | min, 15] | max }}
+  spool: >-
+    {% if spool_name_entities | count > 0 %}
+      {{ states(spool_name_entities[0]) }}
+    {% else %}
+      The spool
+    {% endif %}
+
+actions:
+  - alias: Set the temperature, if the dryer takes orders
+    action: climate.set_temperature
+    target:
+      entity_id: !input dryer_climate
+    data:
+      temperature: "{{ drying_c | float }}"
+
+  - alias: Switch the dryer on, if it is on a plug
+    action: switch.turn_on
+    target:
+      entity_id: !input dryer_switch
+
+  - variables:
+      message: >-
+        {{ spool }}: drying at {{ drying_c }} °C for
+        {{ '%d h %02d min' % (drying_min // 60, drying_min % 60) }}, as the tag
+        asks.
+        {% if dryer_switch_ids | count == 0 %}
+        Switch it on and set the dial yourself — nothing here can do it for you.
+        {% endif %}
+  - alias: Say what is happening
+    sequence: !input notify_action
+
+  - alias: Run for as long as the tag asks
+    delay:
+      minutes: "{{ drying_min }}"
+
+  - alias: Switch the dryer off again
+    action: switch.turn_off
+    target:
+      entity_id: !input dryer_switch
+
+  - variables:
+      message: >-
+        {{ spool }} has had its full
+        {{ '%d h %02d min' % (drying_min // 60, drying_min % 60) }}. Leave it in
+        the dryer until you print with it: a dry spool in room air is wet again
+        in a day.
+  - alias: Say it is done
+    sequence: !input notify_action

@@ -1,0 +1,66 @@
+# Two jobs, matching the two halves of docs/build.md:
+#
+#   tests     the desktop harness, the sanitizer build, the generated headers
+#             and the Home Assistant package -- everything README's "Running
+#             the tests" section asks for
+#   firmware  the sketch itself, compiled against the pinned board package and
+#             library from docs/build.md, with secrets.example.h standing in
+#             for the git-ignored secrets.h
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      - name: Desktop tests
+        run: make -C tests test
+
+      - name: Codec under address/UB sanitizers
+        run: make -C tests asan
+
+      - name: Tag image decoder builds
+        run: make -C tests dump_tag
+
+      # Both headers are generated from spec-data/ and tests/fixtures/ but
+      # checked in, so a hand edit to either, or a spec refresh without a
+      # regenerate, shows up here instead of as a silent mismatch.
+      - name: Generated headers are up to date
+        run: |
+          python3 tools/gen_enums.py
+          python3 tools/gen_fixture_expectations.py
+          git diff --exit-code
+
+      - name: Home Assistant package
+        run: python3 tools/check_ha_package.py
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Board package and library
+        run: |
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install PubSubClient@2.8
+
+      - name: Compile
+        run: |
+          cp firmware/OpenPrintTagDryer/secrets.example.h firmware/OpenPrintTagDryer/secrets.h
+          arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C6:CDCOnBoot=cdc \
+            --warnings default firmware/OpenPrintTagDryer

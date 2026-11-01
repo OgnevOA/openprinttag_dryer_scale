@@ -1,0 +1,30 @@
+Reference,Value,Package,Quantity,Note
+U1,XIAO ESP32-C6,Seeed 113991135,1,"Solder to the castellated pads, or fit 2x7 sockets to keep it removable"
+U2,HX711,SOIC-16W,1,"Bare IC, not a module: VSUP 5 V, DVDD 3.3 V"
+Q1,BC817-40,SOT-23,1,Pass transistor for the 4.3 V bridge excitation
+D1,SS34,SMA,1,"Schottky, keeps the board USB and the XIAO USB apart"
+D2,1N4148W,SOD-123,1,Drops the WS2812 rail so 3.3 V data clears its threshold
+D3,WS2812B,PLCC4 5.0x5.0,1,Status LED
+F1,500 mA PTC,1206,1,"Resettable, on the USB-C input"
+J1,"USB-C receptacle, power only",16 pin SMD,1,5 V input for the permanent installation
+J2,"Screw terminal, 4 pin",5.08 mm pitch,1,Load cell
+J3,"IDC header, 2x5",2.54 mm pitch,1,Ribbon to the PN5180 at the lid
+J4,"Pin header, 1x4",2.54 mm pitch,1,I2C temperature sensor on the load cell
+"R1, R2",5.1 k,0603,2,USB-C CC pull-downs
+R3,20 k,0603,1,"Excitation feedback, upper"
+R4,8.2 k,0603,1,"Excitation feedback, lower: sets 4.3 V"
+R5,0 R,1206,1,The single join between AGND and GND
+"R6, R7",1 k,0603,2,Load cell input filter
+"R8, R9",33 R,0603,2,Series termination on SCK and MOSI
+"R10, R11",10 k,0603,2,Pull-ups on NSS and RST
+R12,330 R,0603,1,WS2812 data series resistor
+"R13, R14",4.7 k,0603,2,I2C pull-ups
+C1,"220 uF, 10 V",6.3x7.7 electrolytic,1,"Bulk, next to J3 for the reader's field bursts"
+"C2, C4, C7","10 uF, 16 V",0603,3,Rail decoupling
+"C3, C5, C6, C8, C9, C13",100 nF,0603,6,Local decoupling
+C10,100 nF,0603,1,"Differential, across the cell inputs"
+"C11, C12",10 nF,0603,2,"Common mode, on the cell inputs"
+"TP1, TP2",Test pad,1.5 mm,2,AVDD and AGND
+-,PN5180 module with antenna,off board,1,"At the lid, on the ribbon"
+-,5 kg single point load cell,TAL220 class,1,Under the dryer
+-,LM75B or TMP102 breakout,off board,1,Bonded to the load cell body

@@ -1,0 +1,232 @@
+# A dashboard view for the dryer. Core cards only.
+#
+# Paste into a dashboard's raw configuration editor (three-dot menu > Edit in
+# YAML) as one entry under `views:`, or use the whole file as a standalone
+# dashboard.
+#
+# If you renamed the device in Home Assistant, search and replace
+# `filament_dryer` here as well.
+
+views:
+  - title: Filament dryer
+    path: filament-dryer
+    icon: mdi:printer-3d-nozzle
+    type: sections
+    max_columns: 3
+    sections:
+      # ---------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: What is in the dryer
+            heading_style: title
+            icon: mdi:printer-3d-nozzle
+
+          - type: markdown
+            content: >-
+              ## {{ states('sensor.filament_dryer_spool') }}
+
+              {% if is_state('binary_sensor.filament_dryer_tag_present', 'on') %}
+              {{ states('sensor.filament_dryer_colour') }} ·
+              spool {{ states('sensor.filament_dryer_spool_id') }} ·
+              print at {{ states('sensor.filament_dryer_print_temperature') }}
+              {% else %}
+              No tag is being read. Either the dryer is empty, or a spool is in
+              there without a tag on it — provision one at
+              [the device's portal](http://openprinttag-dryer.local/provision).
+              {% endif %}
+
+          - type: gauge
+            entity: sensor.filament_dryer_remaining
+            name: Remaining
+            min: 0
+            max: 100
+            needle: true
+            severity:
+              green: 40
+              yellow: 15
+              red: 0
+
+          - type: glance
+            show_name: true
+            columns: 3
+            entities:
+              - entity: sensor.filament_dryer_remaining_filament
+                name: Remaining
+              - entity: sensor.filament_dryer_remaining_length
+                name: Length
+              - entity: sensor.filament_dryer_consumed_filament
+                name: Used
+
+      # ---------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Drying
+            heading_style: title
+            icon: mdi:air-filter
+
+          - type: entities
+            state_color: true
+            entities:
+              - entity: sensor.filament_dryer_recommended_drying_temperature
+                name: Recommended temperature
+              - entity: sensor.filament_dryer_recommended_drying_time
+                name: Recommended time
+              - entity: timer.filament_dryer_dry_cycle
+                name: Cycle
+              - entity: sensor.filament_dryer_dry_cycle_finishes
+                name: Finishes
+
+          - type: button
+            name: Start the dry cycle timer
+            icon: mdi:air-filter
+            show_state: false
+            tap_action:
+              action: perform-action
+              perform_action: script.filament_dryer_start_dry_cycle
+
+          # Says out loud what the button can and cannot do, because a dryer
+          # that takes orders over the network is the exception.
+          - type: markdown
+            content: >-
+              Reads the temperature and time off the tag, times the cycle, and
+              tells you what to dial in. It can only switch the dryer itself if
+              you set `dryer_switch` in the script to a smart plug.
+
+          - type: entities
+            entities:
+              - entity: input_number.filament_dryer_low_threshold
+                name: Alert below
+              - entity: binary_sensor.filament_dryer_filament_low
+                name: Filament low
+
+      # ---------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Scale and tag
+            heading_style: title
+            icon: mdi:scale
+
+          - type: entities
+            state_color: true
+            entities:
+              - entity: sensor.filament_dryer_gross_weight
+                name: Gross on the platform
+              - entity: binary_sensor.filament_dryer_weight_stable
+                name: Weight settled
+              - entity: sensor.filament_dryer_load_cell_temperature
+                name: Load cell
+              - type: divider
+              - entity: binary_sensor.filament_dryer_tag_present
+                name: Tag in the field
+              - entity: sensor.filament_dryer_last_tag_read
+                name: Last read
+              - entity: sensor.filament_dryer_last_tag_write
+                name: Last write
+              - entity: sensor.filament_dryer_write_back_status
+                name: Write-back
+
+          - type: entities
+            title: Controls
+            entities:
+              - entity: switch.filament_dryer_automatic_write_back
+                name: Automatic write-back
+              - entity: button.filament_dryer_write_tag_now
+                name: Write the tag now
+              - entity: button.filament_dryer_re_read_tag
+                name: Re-read the tag
+              - entity: text.filament_dryer_storage_location
+                name: Storage location
+
+      # ---------------------------------------------------------------
+      # Kept in its own section because these are the entities that only matter
+      # when something is wrong.
+      - type: grid
+        cards:
+          - type: heading
+            heading: Diagnostics
+            heading_style: subtitle
+            icon: mdi:stethoscope
+
+          - type: conditional
+            conditions:
+              - condition: or
+                conditions:
+                  - condition: state
+                    entity: binary_sensor.filament_dryer_reader_online
+                    state: "off"
+                  - condition: state
+                    entity: binary_sensor.filament_dryer_scale_online
+                    state: "off"
+                  - condition: state
+                    entity: binary_sensor.filament_dryer_tag_disagrees_with_scale
+                    state: "on"
+            card:
+              type: markdown
+              content: >-
+                **Something needs attention.**
+                {{ states('sensor.filament_dryer_error') }}.
+                Open [the self-test](http://openprinttag-dryer.local/selftest).
+
+          - type: entities
+            entities:
+              - entity: binary_sensor.filament_dryer_reader_online
+                name: Reader
+              - entity: binary_sensor.filament_dryer_scale_online
+                name: Converter
+              - entity: binary_sensor.filament_dryer_tag_disagrees_with_scale
+                name: Tag disagrees with the scale
+              - entity: sensor.filament_dryer_tag_uid
+                name: Tag UID
+              - entity: sensor.filament_dryer_reference_full_weight
+                name: Reference full weight
+              - entity: sensor.filament_dryer_empty_spool_weight
+                name: Empty spool
+              - entity: sensor.filament_dryer_consumed_weight_on_tag
+                name: Consumed, per the tag
+              - entity: sensor.filament_dryer_tag_blocks_written
+                name: Blocks written
+              - entity: sensor.filament_dryer_error
+                name: Error
+              - entity: sensor.filament_dryer_last_command_result
+                name: Last command
+
+          - type: entities
+            title: Calibration
+            entities:
+              - entity: number.filament_dryer_calibration_mass
+                name: Known mass
+              - entity: button.filament_dryer_calibrate_with_mass
+                name: Calibrate the span
+              - entity: button.filament_dryer_tare_empty_dryer
+                name: Tare the empty dryer
+              - entity: switch.filament_dryer_tag_polling
+                name: Tag polling
+              - entity: button.filament_dryer_wipe_auxiliary_region
+                name: Wipe the auxiliary region
+
+      # ---------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: History
+            heading_style: subtitle
+            icon: mdi:chart-line
+
+          - type: history-graph
+            hours_to_show: 168
+            entities:
+              - entity: sensor.filament_dryer_remaining_filament
+                name: Remaining
+
+          # Weight against cell temperature over the same window is how thermal
+          # drift shows itself in normal use: the two should not move together.
+          - type: history-graph
+            hours_to_show: 48
+            entities:
+              - entity: sensor.filament_dryer_gross_weight
+                name: Gross
+              - entity: sensor.filament_dryer_load_cell_temperature
+                name: Cell

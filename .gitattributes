@@ -1,0 +1,8 @@
+# Source and docs are LF everywhere, whatever the contributor's platform.
+* text=auto eol=lf
+
+# Tag images from the specification and the generated meshes: never diffed or
+# normalised.
+*.bin binary
+*.stl binary
+*.png binary

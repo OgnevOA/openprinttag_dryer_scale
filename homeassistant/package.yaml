@@ -1,0 +1,414 @@
+# Home Assistant package for the OpenPrintTag dryer scale.
+#
+# Copy to config/packages/filament_dryer.yaml and include the folder from
+# configuration.yaml:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Everything here is core Home Assistant, with one exception noted where it
+# appears: the last automation reads entities from the Spoolman HACS integration
+# and does nothing at all when that is not installed. No custom cards. The
+# device's own entities arrive by MQTT discovery, so nothing below declares them.
+#
+# Two things to change, and the README explains both:
+#
+#   1. If you renamed the device in Home Assistant, its entity ids changed with
+#      it. Search and replace `filament_dryer` throughout this file.
+#   2. If the dryer is on a smart plug or is temperature-controllable, set
+#      `dryer_switch` and `dryer_climate` in the script near the bottom. Left as
+#      they are, the automations only ever tell you what to set by hand.
+#
+# Requires Home Assistant 2024.10 or newer for the plural trigger syntax.
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+input_number:
+  filament_dryer_low_threshold:
+    name: Low filament threshold
+    icon: mdi:alert-outline
+    min: 25
+    max: 1000
+    step: 25
+    unit_of_measurement: g
+    mode: box
+
+input_boolean:
+  # Without a latch, a spool hovering either side of the threshold sends an
+  # alert every time somebody nudges the dryer.
+  filament_dryer_low_alerted:
+    name: Low filament alert sent
+    icon: mdi:bell-check-outline
+
+timer:
+  filament_dryer_dry_cycle:
+    name: Dry cycle
+    icon: mdi:air-filter
+    restore: true
+    duration: "04:00:00"
+
+# ---------------------------------------------------------------------------
+# Derived entities
+# ---------------------------------------------------------------------------
+# Template entities get their entity id from their name and belong to no device,
+# so the names carry the prefix by hand. That keeps every id in this file
+# consistent, which is what makes the search-and-replace above work.
+template:
+  - sensor:
+      # One line that says what is in the dryer, for the dashboard header and
+      # for notifications.
+      - name: Filament dryer spool
+        unique_id: filament_dryer_spool_label
+        icon: mdi:printer-3d-nozzle
+        # The whitespace control matters: without it the state arrives with the
+        # template's own newlines and indentation inside it.
+        availability: "{{ has_value('binary_sensor.filament_dryer_tag_present') }}"
+        state: >-
+          {%- if is_state('binary_sensor.filament_dryer_tag_present', 'on') -%}
+            {{ [states('sensor.filament_dryer_brand') if has_value('sensor.filament_dryer_brand') else none,
+                states('sensor.filament_dryer_material_name') if has_value('sensor.filament_dryer_material_name')
+                else states('sensor.filament_dryer_material_type')] | reject('none') | join(' ') }}
+          {%- else -%}
+            No tag
+          {%- endif -%}
+
+      # How much longer the running cycle has, as a timestamp so the dashboard
+      # can render it as a relative time.
+      - name: Filament dryer dry cycle finishes
+        unique_id: filament_dryer_dry_cycle_finishes
+        device_class: timestamp
+        state: >-
+          {%- if is_state('timer.filament_dryer_dry_cycle', 'active') -%}
+            {{ state_attr('timer.filament_dryer_dry_cycle', 'finishes_at') }}
+          {%- else -%}
+            {{ none }}
+          {%- endif -%}
+
+  - binary_sensor:
+      # A plain "is it low" that the dashboard and the alert both read, so the
+      # threshold lives in exactly one place.
+      - name: Filament dryer filament low
+        unique_id: filament_dryer_filament_low
+        device_class: problem
+        icon: mdi:printer-3d-nozzle-alert
+        state: >-
+          {{ has_value('sensor.filament_dryer_remaining_filament')
+             and states('sensor.filament_dryer_remaining_filament') | float(0)
+                 < states('input_number.filament_dryer_low_threshold') | float(150) }}
+        availability: >-
+          {{ has_value('sensor.filament_dryer_remaining_filament') }}
+
+# ---------------------------------------------------------------------------
+# Scripts
+# ---------------------------------------------------------------------------
+script:
+  filament_dryer_start_dry_cycle:
+    # Named for what it does on an ordinary dryer, which is to time the cycle
+    # and tell you the settings. It reaches for the dryer only if you have given
+    # it something to reach for, below.
+    alias: Start the dry cycle timer
+    icon: mdi:air-filter
+    mode: single
+    variables:
+      # Set these to your own entities if the dryer is controllable. Left as
+      # non-existent entities, the steps that use them are skipped.
+      #
+      # Most dryers, the Creality Space Pi included, have no network control at
+      # all, and no plug can supply the temperature -- that dial stays manual.
+      # A smart plug is still worth it for `dryer_switch`: the cycle then starts
+      # the dryer and, more usefully, the finished-cycle automation switches it
+      # off hours later without you being home.
+      dryer_switch: switch.filament_dryer_plug
+      dryer_climate: climate.filament_dryer
+      drying_c: "{{ states('sensor.filament_dryer_recommended_drying_temperature') }}"
+      drying_min: "{{ states('sensor.filament_dryer_recommended_drying_time') | int(0) }}"
+    sequence:
+      - alias: Refuse to guess when the tag does not say
+        condition: template
+        value_template: "{{ drying_min > 0 and drying_c not in ['unknown', 'unavailable', 'none'] }}"
+
+      - alias: Set the temperature if the dryer takes orders
+        if:
+          - condition: template
+            value_template: "{{ states(dryer_climate) not in ['unknown', 'unavailable'] }}"
+        then:
+          - action: climate.set_temperature
+            target:
+              entity_id: "{{ dryer_climate }}"
+            data:
+              temperature: "{{ drying_c | float }}"
+
+      - alias: Switch the dryer on if it is on a plug
+        if:
+          - condition: template
+            value_template: "{{ states(dryer_switch) not in ['unknown', 'unavailable'] }}"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: "{{ dryer_switch }}"
+
+      - alias: Run the timer for as long as the tag asks
+        action: timer.start
+        target:
+          entity_id: timer.filament_dryer_dry_cycle
+        data:
+          duration: "{{ '%02d:%02d:00' % (drying_min // 60, drying_min % 60) }}"
+
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_dry_cycle
+          title: Drying {{ states('sensor.filament_dryer_spool') }}
+          message: >-
+            Set the dryer to {{ drying_c }} °C for
+            {{ '%d h %02d min' % (drying_min // 60, drying_min % 60) }}, which is
+            what the tag asks for. The timer will say when it is done.
+
+# ---------------------------------------------------------------------------
+# Automations
+# ---------------------------------------------------------------------------
+automation:
+  - id: filament_dryer_new_spool
+    alias: "Filament dryer: announce a new spool"
+    description: >-
+      A different tag UID means a different spool, whatever else changed. Waits
+      for the weight to settle before quoting it, because a spool just dropped
+      into the dryer reads high for a few seconds.
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: sensor.filament_dryer_tag_uid
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.state not in ['unknown', 'unavailable', 'none', '']
+             and trigger.from_state.state != trigger.to_state.state }}
+    actions:
+      - alias: A new spool starts with a clean alert latch
+        action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.filament_dryer_low_alerted
+
+      - alias: Wait for the scale to settle
+        wait_template: "{{ is_state('binary_sensor.filament_dryer_weight_stable', 'on') }}"
+        timeout: "00:02:00"
+        continue_on_timeout: true
+
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_new_spool
+          title: "{{ states('sensor.filament_dryer_spool') }}"
+          message: >-
+            {{ states('sensor.filament_dryer_remaining_filament') }} g remaining
+            {%- if has_value('sensor.filament_dryer_remaining_length') %}
+            ({{ states('sensor.filament_dryer_remaining_length') }} m)
+            {%- endif %}.
+            {% if has_value('sensor.filament_dryer_recommended_drying_temperature') %}
+            The tag asks for {{ states('sensor.filament_dryer_recommended_drying_temperature') }} °C
+            for {{ states('sensor.filament_dryer_recommended_drying_time') }} minutes.
+            {% endif %}
+
+  - id: filament_dryer_low_filament
+    alias: "Filament dryer: low filament alert"
+    description: >-
+      Fires once per spool. The stability condition is what stops an alert
+      arriving because somebody opened the lid.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.filament_dryer_filament_low
+        to: "on"
+        for: "00:05:00"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.filament_dryer_low_alerted
+        state: "off"
+      - condition: state
+        entity_id: binary_sensor.filament_dryer_weight_stable
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.filament_dryer_tag_present
+        state: "on"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_low_filament
+          title: Filament running low
+          message: >-
+            {{ states('sensor.filament_dryer_spool') }} is down to
+            {{ states('sensor.filament_dryer_remaining_filament') }} g
+            {%- if has_value('sensor.filament_dryer_remaining_length') %}
+            , about {{ states('sensor.filament_dryer_remaining_length') }} m
+            {%- endif %}.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.filament_dryer_low_alerted
+
+  - id: filament_dryer_low_reset
+    alias: "Filament dryer: rearm the low filament alert"
+    description: >-
+      Well above the threshold rather than just above it, so a spool sitting on
+      the line does not rearm and re-alert all day.
+    mode: single
+    triggers:
+      - trigger: template
+        value_template: >-
+          {{ has_value('sensor.filament_dryer_remaining_filament')
+             and states('sensor.filament_dryer_remaining_filament') | float(0) >
+                 states('input_number.filament_dryer_low_threshold') | float(150) + 100 }}
+        for: "00:05:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.filament_dryer_low_alerted
+
+  - id: filament_dryer_dry_cycle_done
+    alias: "Filament dryer: dry cycle finished"
+    mode: single
+    variables:
+      dryer_switch: switch.filament_dryer_plug
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.filament_dryer_dry_cycle
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ states(dryer_switch) not in ['unknown', 'unavailable'] }}"
+        then:
+          - action: switch.turn_off
+            target:
+              entity_id: "{{ dryer_switch }}"
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_dry_cycle
+          title: Drying finished
+          message: >-
+            {{ states('sensor.filament_dryer_spool') }} has had its full cycle.
+            Leave it in the dryer until you print with it: a dry spool in room
+            air is wet again in a day.
+
+  - id: filament_dryer_tag_disagrees
+    alias: "Filament dryer: tag disagrees with the scale"
+    description: >-
+      The tag's own consumed weight and the scale's figure should track each
+      other. A persistent gap means the tare moved, the dryer was shifted, or
+      the spool was printed from elsewhere.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.filament_dryer_tag_disagrees_with_scale
+        to: "on"
+        for: "00:15:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_disagrees
+          title: Spool weight does not add up
+          message: >-
+            The scale says {{ states('sensor.filament_dryer_consumed_filament') }} g
+            consumed; the tag says {{ states('sensor.filament_dryer_consumed_weight_on_tag') }} g.
+            Check that the dryer has not been moved, then re-check the tare
+            against a sealed spool. See docs/validation.md, test 5.
+
+  - id: filament_dryer_hardware_problem
+    alias: "Filament dryer: hardware problem"
+    description: >-
+      The reader and the converter are the two things that fail silently. Once
+      either is out, every weight and every spool identity downstream is stale.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id:
+          - binary_sensor.filament_dryer_reader_online
+          - binary_sensor.filament_dryer_scale_online
+        to: "off"
+        for: "00:10:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_hardware
+          title: Dryer scale needs attention
+          message: >-
+            {{ trigger.to_state.attributes.friendly_name }} has been offline for
+            ten minutes. Error reported: {{ states('sensor.filament_dryer_error') }}.
+            Open http://openprinttag-dryer.local/selftest for the details.
+
+  # The one thing in this file that wants a HACS integration:
+  # github.com/Disane87/spoolman-homeassistant. Without it,
+  # integration_entities('spoolman') is an empty list, the condition below never
+  # passes, and this automation quietly never fires. Nothing else here depends
+  # on it, so leaving it in place costs nothing.
+  - id: filament_dryer_spoolman_tare_disagrees
+    alias: "Filament dryer: Spoolman's tare disagrees with the tag"
+    description: >-
+      The tag's empty_container_weight and Spoolman's spool_weight are the same
+      number written down twice, and Spoolman's copy is the one its used-weight
+      figures are derived from. A copy that is too light makes the spool look
+      fuller than it is, and on a nearly-full spool it reads heavier than full --
+      which is the reading Spoolman takes as a correction to what full means,
+      rewriting the initial weight. Cheap to check, expensive to discover later.
+    mode: single
+    variables:
+      # The dryer reports the UID as 16 upper-case hex digits with no
+      # separators, which is already the form Spoolman is given.
+      uid: "{{ states('sensor.filament_dryer_tag_uid') | upper }}"
+      tag_tare: "{{ states('sensor.filament_dryer_empty_spool_weight') | float(0) }}"
+      # Find the spool by tag rather than by a hard-coded id, so this keeps
+      # working as spools come and go. The integration turns each Spoolman extra
+      # field into a sensor and hangs the spool id on it as an attribute, which
+      # saves parsing the id back out of the entity name.
+      #
+      # Spoolman stores every `extra` value as JSON, so a text field comes back
+      # with its quotes still attached: "E004...". Strip them before comparing.
+      spool_id: >-
+        {%- set ns = namespace(id = none) -%}
+        {%- for e in integration_entities('spoolman') if e.endswith('_extra_nfc_uid') -%}
+          {%- if states(e) | replace('"', '') | trim | upper == uid -%}
+            {%- set ns.id = state_attr(e, 'spool_id') -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.id if ns.id is not none else '' }}
+      # Absent when the spool has no tare of its own: the integration only
+      # creates this sensor when Spoolman's spool_weight is set on the spool
+      # rather than inherited from the filament.
+      spoolman_tare: "{{ states('sensor.spoolman_spool_' ~ spool_id ~ '_spool_weight') }}"
+    triggers:
+      # Once a tag appears, the dryer still has to look the spool up and the
+      # integration has to poll it back before there is anything to compare.
+      - trigger: state
+        entity_id: binary_sensor.filament_dryer_tag_present
+        to: "on"
+        for: "00:02:00"
+      # And whenever either copy of the number moves under us.
+      - trigger: state
+        entity_id: sensor.filament_dryer_empty_spool_weight
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ uid | string | length == 16 and spool_id != '' and tag_tare > 0
+             and (spoolman_tare in ['unknown', 'unavailable']
+                  or ((spoolman_tare | float(0)) - tag_tare) | abs > 2) }}
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: filament_dryer_spoolman_tare
+          title: Spoolman's spool weight does not match the tag
+          # Every line sits at the same indentation on purpose: inside a folded
+          # block, a more-indented line keeps its newline and its spaces, and
+          # they end up in the notification.
+          message: >-
+            {% if spoolman_tare in ['unknown', 'unavailable'] -%}
+            Spool {{ spool_id }} has no empty spool weight of its own in
+            Spoolman, so it is inheriting the filament's. Set it on the spool
+            to {{ tag_tare | round(0) | int }} g, which is the tag's figure with
+            the adapter included.
+            {%- else -%}
+            The tag says {{ tag_tare | round(0) | int }} g of spool plus adapter;
+            Spoolman has {{ spoolman_tare | float(0) | round(0) | int }} g for
+            spool {{ spool_id }}. Spoolman's copy is where its used weights come
+            from, so correct it there -- or re-provision the tag if the tag is
+            the one that is wrong. A gap of about 31 g is the adapter missing
+            from one of them; see docs/spoolman.md.
+            {%- endif %}

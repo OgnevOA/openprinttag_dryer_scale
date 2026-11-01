@@ -1,0 +1,66 @@
+# Spoolman as a TrueNAS SCALE custom app.
+#
+# Apps -> Discover -> the three-dot menu beside Custom App -> Install via YAML,
+# name the app "spoolman", and paste everything below into Custom Config.
+#
+# Two things need editing first: the dataset path under `source:`, and the
+# PUID/PGID if your apps user is not 568. Both are explained in
+# docs/spoolman.md, along with why they matter.
+#
+# There is deliberately no `version:` key. Compose v2 ignores it and warns about
+# it, and TrueNAS runs Compose v2.
+
+services:
+  spoolman:
+    image: ghcr.io/donkie/spoolman:0.26
+    restart: unless-stopped
+
+    environment:
+      # The image starts as root, moves its own `app` user to this uid/gid, then
+      # drops privileges to it. Setting these to the uid of TrueNAS's apps user
+      # is what lets the dataset stay owned by apps:apps like every other app's
+      # storage, instead of being chowned to the image's built-in 1000.
+      #
+      # This picks which uid must be able to write the dataset; it does not grant
+      # it. The dataset must be owned by this uid or Spoolman exits during startup
+      # rather than running degraded. The Apps dataset preset gets this right;
+      # other presets leave it root:root. See docs/spoolman.md.
+      #
+      # Check yours in the TrueNAS shell with `id apps`. A non-numeric value is
+      # refused outright, and 0 is refused too, which is the correct behaviour
+      # and not something to work around.
+      PUID: "568"
+      PGID: "568"
+
+      # Only affects how timestamps are printed in the logs; what goes in the
+      # database is UTC regardless.
+      TZ: UTC
+
+    volumes:
+      # Left of the colon: a dataset you created for this. Right of it: where
+      # Spoolman keeps spoolman.db, which must not be changed.
+      - type: bind
+        source: /mnt/POOL/apps/spoolman
+        target: /home/app/.local/share/spoolman
+
+    ports:
+      # 7912 is what every Spoolman client and every guide assumes on the host
+      # side; 8000 is the port inside the container and is not worth changing.
+      - "7912:8000"
+
+    # Spoolman answers /api/v1/health, and python is in the image, so the app's
+    # state in the TrueNAS UI can mean "it is actually serving" rather than "the
+    # process has not exited yet".
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/v1/health").read()
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    security_opt:
+      - no-new-privileges:true
